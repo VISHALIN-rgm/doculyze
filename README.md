@@ -68,7 +68,7 @@ the code assuming ahead of time.
 ## 🏗️ Architecture
 
 ```
- Browser (React, single-page, Amplify Hosting)
+ Browser (React)
         │
         │  POST /upload  (base64 file)
         ▼
@@ -122,7 +122,6 @@ the code assuming ahead of time.
 | λ **AWS Lambda** | Every unit of compute in the backend — eight functions total, each doing one job. Nothing runs, and nothing costs anything, when no one is uploading a document. |
 | 🗄️ **Amazon DynamoDB** | Stores each analysis result — status, summary, flagged clauses, raw extracted text (for chat), and the document's S3 location (for the viewer) — on-demand billing, no provisioned capacity to manage. |
 | 🌐 **Amazon API Gateway** | A single HTTP API fronting all six externally-callable Lambda functions, with CORS handled at the gateway level. |
-| ☁️ **AWS Amplify Hosting** | Hosts the React frontend — a static single-page build, no server to manage. |
 | 📊 **AWS X-Ray** (via `Tracing: Active`) | Every Lambda function traces its execution, so a slow or failing step is traceable end-to-end across the whole pipeline, not just visible in isolated logs. |
 
 That's **seven distinct AWS services** working together in one pipeline
