@@ -1,0 +1,106 @@
+{
+  "Comment": "Doculyze: start an async Textract job for whatever document was uploaded, poll until it finishes (works the same regardless of page count or document type), explain it in plain language, save the result.",
+  "StartAt": "StartExtraction",
+  "States": {
+    "StartExtraction": {
+      "Type": "Task",
+      "Resource": "${StartExtractionFunctionArn}",
+      "ResultPath": "$.job",
+      "Next": "WaitForExtraction",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "SaveFailure"
+        }
+      ]
+    },
+    "WaitForExtraction": {
+      "Type": "Wait",
+      "Seconds": 5,
+      "Next": "CheckExtraction"
+    },
+    "CheckExtraction": {
+      "Type": "Task",
+      "Resource": "${CheckExtractionFunctionArn}",
+      "ResultPath": "$.extraction",
+      "Next": "EvaluateExtraction",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "SaveFailure"
+        }
+      ]
+    },
+    "EvaluateExtraction": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.extraction.status",
+          "StringEquals": "SUCCEEDED",
+          "Next": "ExplainDocument"
+        },
+        {
+          "Variable": "$.extraction.status",
+          "StringEquals": "FAILED",
+          "Next": "MapExtractionFailure"
+        }
+      ],
+      "Default": "WaitForExtraction"
+    },
+    "MapExtractionFailure": {
+      "Type": "Pass",
+      "InputPath": "$.extraction.error",
+      "ResultPath": "$.error",
+      "Next": "SaveFailure"
+    },
+    "ExplainDocument": {
+      "Type": "Task",
+      "Resource": "${ExplainDocumentFunctionArn}",
+      "ResultPath": "$.explanation",
+      "Next": "SaveResult",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "SaveFailure"
+        }
+      ]
+    },
+    "SaveResult": {
+      "Type": "Task",
+      "Resource": "${SaveResultFunctionArn}",
+      "End": true
+    },
+    "SaveFailure": {
+      "Type": "Task",
+      "Resource": "${SaveResultFunctionArn}",
+      "End": true
+    }
+  }
+}

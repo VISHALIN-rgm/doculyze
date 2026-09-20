@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Doculyze — an agent that reads any document and explains it in plain
+  language. S3 upload -> Step Functions (Textract -> Groq) -> DynamoDB,
+  fronted by an HTTP API for the React app.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+
+Parameters:
+  GroqApiKey:
+    Type: String
+    NoEcho: true
+    Description: >
+      API key for Groq (console.groq.com). Used by explain_document and
+      chat, both called directly over HTTPS with Python's built-in
+      urllib — no extra dependency. Marked NoEcho so it doesn't appear
+      in the CloudFormation console/CLI output; it's still set as a
+      plain Lambda environment variable, so for a production deployment
+      beyond hackathon scope, moving it into AWS Secrets Manager is the
+      stronger option.
+  GroqModelId:
+    Type: String
+    Default: openai/gpt-oss-120b
+    Description: >
+      Groq model id used for both explaining documents and chat.
+      llama-3.3-70b-versatile and llama-3.1-8b-instant moved to Groq's
+      Enterprise-only tier on 2026-08-16 and no longer work with a
+      free/developer API key — openai/gpt-oss-120b is Groq's own
+      recommended replacement, and is what this defaults to.
+      Swapping it is a config change only — see console.groq.com/docs
+      for the current list of available models.
+
+Resources:
+
+  ## ---------- Storage ----------
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'doculyze-uploads-${AWS::AccountId}-${AWS::Region}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, PUT, POST]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: doculyze-results
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: documentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: documentId
+          KeyType: HASH
+
+  ## ---------- Lambda functions ----------
+
+  UploadHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/upload_handler/
+      Handler: app.handler
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          STATE_MACHINE_ARN: !Ref ExplainWorkflow
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref UploadsBucket
+        - StatesExecutionPolicy:
+            StateMachineName: !GetAtt ExplainWorkflow.Name
+      Events:
+        UploadApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /upload
+            Method: POST
+
+  StartExtractionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/start_extraction/
+      Handler: app.handler
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref UploadsBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:StartDocumentAnalysis
+              Resource: '*'
+
+  CheckExtractionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/check_extraction/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:GetDocumentAnalysis
+              Resource: '*'
+
+  ExplainDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/explain_document/
+      Handler: app.handler
+      Timeout: 60
+      Environment:
+        Variables:
+          GROQ_API_KEY: !Ref GroqApiKey
+          GROQ_MODEL_ID: !Ref GroqModelId
+      # No custom IAM policy needed here — Groq is called over plain
+      # HTTPS with Python's built-in urllib, not an AWS service, so
+      # this function only needs the default Lambda execution role.
+
+  SaveResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/save_result/
+      Handler: app.handler
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+
+  GetResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/get_result/
+      Handler: app.handler
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ResultsTable
+      Events:
+        GetResultApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /result/{documentId}
+            Method: GET
+        ListResultsApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /results
+            Method: GET
+
+  ChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/chat/
+      Handler: app.handler
+      Timeout: 30
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+          GROQ_API_KEY: !Ref GroqApiKey
+          GROQ_MODEL_ID: !Ref GroqModelId
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ResultsTable
+      Events:
+        ChatApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /chat
+            Method: POST
+
+  GetDocumentUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/get_document_url/
+      Handler: app.handler
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ResultsTable
+        - S3ReadPolicy:
+            BucketName: !Ref UploadsBucket
+      Events:
+        GetDocumentUrlApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /document/{documentId}
+            Method: GET
+
+  ## ---------- Step Functions ----------
+
+  ExplainWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: doculyze-explain-workflow
+      DefinitionUri: statemachine/explain_flow.asl.json
+      DefinitionSubstitutions:
+        StartExtractionFunctionArn: !GetAtt StartExtractionFunction.Arn
+        CheckExtractionFunctionArn: !GetAtt CheckExtractionFunction.Arn
+        ExplainDocumentFunctionArn: !GetAtt ExplainDocumentFunction.Arn
+        SaveResultFunctionArn: !GetAtt SaveResultFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StartExtractionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CheckExtractionFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExplainDocumentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SaveResultFunction
+
+  ## ---------- API ----------
+
+  DoculyzeHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST', 'OPTIONS']
+        AllowHeaders: ['*']
+
+Outputs:
+  ApiEndpoint:
+    Description: Base URL for the Doculyze HTTP API
+    Value: !Sub 'https://${DoculyzeHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
+  ResultsTableName:
+    Value: !Ref ResultsTable
+  StateMachineArn:
+    Value: !Ref ExplainWorkflow

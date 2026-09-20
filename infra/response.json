@@ -1,0 +1,1 @@
+{"errorMessage": "'extraction'", "errorType": "KeyError", "requestId": "9ed9318c-f3e1-4a7c-ac9c-1a74a22c4d92", "stackTrace": ["  File \"/var/task/app.py\", line 17, in handler\n    extraction = event[\"extraction\"]\n"]}

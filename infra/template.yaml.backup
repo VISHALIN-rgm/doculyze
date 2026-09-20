@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Doculyze — an agent that reads any document and explains it in plain
+  language. S3 upload -> Step Functions (Textract -> Bedrock) -> DynamoDB,
+  fronted by an HTTP API for the React app.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 60
+    MemorySize: 512
+    Tracing: Active
+
+Parameters:
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+    Description: Bedrock model id used to explain documents
+
+Resources:
+
+  ## ---------- Storage ----------
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'doculyze-uploads-${AWS::AccountId}-${AWS::Region}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [GET, PUT, POST]
+            AllowedOrigins: ['*']
+            AllowedHeaders: ['*']
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: doculyze-results
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: documentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: documentId
+          KeyType: HASH
+
+  ## ---------- Lambda functions ----------
+
+  UploadHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/upload_handler/
+      Handler: app.handler
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          STATE_MACHINE_ARN: !Ref ExplainWorkflow
+                  Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref UploadsBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !Ref ExplainWorkflow
+
+
+      Events:
+        UploadApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /upload
+            Method: POST
+
+  ExtractTextFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/extract_text/
+      Handler: app.handler
+      Timeout: 120
+      Environment:
+        Variables:
+          UPLOADS_BUCKET: !Ref UploadsBucket
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref UploadsBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - textract:DetectDocumentText
+                - textract:AnalyzeDocument
+              Resource: '*'
+
+  ExplainDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/explain_document/
+      Handler: app.handler
+      Timeout: 90
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+
+  SaveResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/save_result/
+      Handler: app.handler
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+
+  GetResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/functions/get_result/
+      Handler: app.handler
+      Environment:
+        Variables:
+          RESULTS_TABLE: !Ref ResultsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ResultsTable
+      Events:
+        GetResultApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /result/{documentId}
+            Method: GET
+        ListResultsApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DoculyzeHttpApi
+            Path: /results
+            Method: GET
+
+  ## ---------- Step Functions ----------
+
+  ExplainWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: doculyze-explain-workflow
+      DefinitionUri: statemachine/explain_flow.asl.json
+      DefinitionSubstitutions:
+        ExtractTextFunctionArn: !GetAtt ExtractTextFunction.Arn
+        ExplainDocumentFunctionArn: !GetAtt ExplainDocumentFunction.Arn
+        SaveResultFunctionArn: !GetAtt SaveResultFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExtractTextFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ExplainDocumentFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SaveResultFunction
+
+  ## ---------- API ----------
+
+  DoculyzeHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'POST', 'OPTIONS']
+        AllowHeaders: ['*']
+
+Outputs:
+  ApiEndpoint:
+    Description: Base URL for the Doculyze HTTP API
+    Value: !Sub 'https://${DoculyzeHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+  UploadsBucketName:
+    Value: !Ref UploadsBucket
+  ResultsTableName:
+    Value: !Ref ResultsTable
+  StateMachineArn:
+    Value: !Ref ExplainWorkflow
