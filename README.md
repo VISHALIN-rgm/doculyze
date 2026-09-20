@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
 
 # 📄 Doculyze
@@ -311,3 +312,6 @@ so no `GROQ_API_KEY` is needed to run them (a dummy value is set in
 Built with 🧠 for the **First Commit** hackathon — Bharat Builds Tour
 
 </div>
+=======
+# doculyze
+>>>>>>> 2435421f32f519b4316a8d1ca5365a0937736cc4
