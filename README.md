@@ -247,10 +247,6 @@ doculyze/
 └── scripts/        deploy + seed helpers
 ```
 
-📹 **Presenting or recording a demo?** See
-[`docs/demo-script.md`](docs/demo-script.md) for a paced, 3-minute
-walkthrough covering the upload flow, the spoken explanation, the
-highlighted clauses, voice chat, and the architecture.
 
 ### Backend functions
 
