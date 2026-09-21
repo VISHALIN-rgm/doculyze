@@ -1,9 +1,8 @@
-<<<<<<< HEAD
 <div align="center">
 
 # 📄 Doculyze
 
-### Any document in. Plain language out — spoken, too.
+### Turn confusing documents into clear answers — spoken, too.
 
 [![AWS](https://img.shields.io/badge/AWS-Cloud%20Native-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)](https://aws.amazon.com)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
@@ -14,6 +13,26 @@
 **Built for the First Commit hackathon — Bharat Builds Tour, Ship It track**
 
 </div>
+
+---
+
+## Contents
+
+- [The Problem](#-the-problem)
+- [The Solution](#-the-solution)
+- [Who It's For](#-who-its-for)
+- [Architecture](#️-architecture)
+- [AWS Services Used](#aws-services-used-and-what-each-one-is-doing)
+- [Why Groq Instead of Amazon Bedrock](#️-why-groq-instead-of-amazon-bedrock)
+- [Future Implementation](#-future-implementation)
+- [Repo Layout](#-repo-layout)
+- [Backend Functions](#backend-functions)
+- [Frontend Features](#-frontend-features)
+- [Prerequisites](#-prerequisites)
+- [Deploy the Backend](#-deploy-the-backend)
+- [Deploy the Frontend — AWS Amplify Hosting](#️-deploy-the-frontend--aws-amplify-hosting)
+- [Local Testing Without AWS](#-local-testing-without-aws)
+- [Running Backend Tests](#️-running-backend-tests)
 
 ---
 
@@ -54,63 +73,74 @@ the code assuming ahead of time.
 
 ## 👥 Who It's For
 
-- **Renters & tenants** — understand lease terms, deposits, and notice
-  periods before signing, or after something feels off
-- **Students** — turn a dense syllabus into a clear list of deadlines
-  and grading rules
-- **Consumers** — make sense of bills, warranties, and terms of
-  service without reading every line
-- **Employees** — get a plain-language read on offer letters and
-  benefits paperwork
-- **Anyone, honestly** — those are just the most common cases; the
-  pipeline doesn't limit itself to a fixed list of document types
+| | |
+|---|---|
+| 🏠 **Renters & tenants** | Understand lease terms, deposits, and notice periods before signing, or after something feels off |
+| 🎓 **Students** | Turn a dense syllabus into a clear list of deadlines and grading rules |
+| 🧾 **Consumers** | Make sense of bills, warranties, and terms of service without reading every line |
+| 💼 **Employees** | Get a plain-language read on offer letters and benefits paperwork |
+| 🌍 **Anyone, honestly** | Those are just the most common cases — the pipeline doesn't limit itself to a fixed list of document types |
 
 ## 🏗️ Architecture
 
+```mermaid
+flowchart TD
+    U([👤 User]) -->|Upload document| FE[React SPA<br/>AWS Amplify Hosting]
+    FE -->|POST /upload| API[Amazon API Gateway<br/>HTTP API]
+
+    API --> UH[λ upload_handler]
+    UH -->|store file| S3[(Amazon S3<br/>raw uploads)]
+    UH -->|start execution| SF{{AWS Step Functions<br/>doculyze-explain-workflow}}
+
+    subgraph WF[" "]
+        direction TB
+        SF --> SE[λ start_extraction]
+        SE -->|StartDocumentAnalysis| WAIT[⏱ Wait 5s]
+        WAIT --> CE[λ check_extraction]
+        CE -->|GetDocumentAnalysis| ST{Job status?}
+        ST -->|IN_PROGRESS| WAIT
+        ST -->|SUCCEEDED| ED[λ explain_document]
+        ST -->|FAILED| SR
+        ED -->|chat completions| GROQ_1[( 🧠 Groq API )]
+        ED --> SR[λ save_result]
+    end
+
+    SR --> DB[(Amazon DynamoDB<br/>results table)]
+
+    FE -->|GET /result/id| GR[λ get_result]
+    GR --> DB
+
+    FE -->|POST /chat| CH[λ chat]
+    CH --> DB
+    CH -->|chat completions| GROQ_2[( 🧠 Groq API )]
+
+    FE -->|GET /document/id| DU[λ get_document_url]
+    DU --> DB
+    DU -->|presigned URL| S3
+
+    FE -.->|Web Speech API<br/>client-side only| VOICE[🔊 Read aloud /<br/>🎙 Voice input]
+
+    style U fill:#2a1608,stroke:#ff8a2b,color:#fff
+    style FE fill:#171009,stroke:#3a2a1c,color:#ffd9ae
+    style API fill:#171009,stroke:#3a2a1c,color:#ffd9ae
+    style S3 fill:#171009,stroke:#3a2a1c,color:#9c8f82
+    style DB fill:#171009,stroke:#3a2a1c,color:#9c8f82
+    style SF fill:#2a1608,stroke:#ff8a2b,color:#ffcf9e
+    style ED fill:#2a1608,stroke:#ff8a2b,color:#ffcf9e
+    style GROQ_1 fill:#2a1608,stroke:#ff8a2b,color:#f0c39a
+    style GROQ_2 fill:#2a1608,stroke:#ff8a2b,color:#f0c39a
+    style VOICE fill:#171009,stroke:#3a2a1c,color:#9c8f82
 ```
- Browser (React)
-        │
-        │  POST /upload  (base64 file)
-        ▼
- Amazon API Gateway (HTTP API)
-        │
-        ▼
- AWS Lambda: upload_handler
-        │  1. writes file to S3
-        │  2. starts a Step Functions execution
-        ▼
- Amazon S3  ◀────────────────┐
- (raw uploads)                │
-                               │
- AWS Step Functions — doculyze-explain-workflow
-        │
-        ├─▶ Lambda: start_extraction   ── Amazon Textract StartDocumentAnalysis (async job)
-        │        │
-        │        ▼
-        │   Wait 5s ──────────────┐
-        │        │                │
-        │        ▼                │
-        ├─▶ Lambda: check_extraction  ── Amazon Textract GetDocumentAnalysis
-        │        │  IN_PROGRESS ──┘   (loops back to Wait)
-        │        │  FAILED ──────────▶ save_result (failed)
-        │        │  SUCCEEDED
-        │        ▼
-        ├─▶ Lambda: explain_document  ── direct HTTPS call to Groq
-        │
-        └─▶ Lambda: save_result       ── Amazon DynamoDB (write)
 
- Browser polls:
-        GET /result/{id}   → Lambda: get_result        → DynamoDB
-        GET /results       → Lambda: get_result        → DynamoDB (list)
+*(GitHub, GitLab, and most modern Markdown viewers render this
+diagram natively. If you're viewing this in plain text, the flow in
+short: **Upload → S3 → Step Functions → Textract (async, polled) →
+Groq → DynamoDB → back to the browser**, with chat and the document
+viewer as two extra on-demand API calls off the results page.)*
 
- On the results page:
-        POST /chat                 → Lambda: chat              → DynamoDB (read) + Groq
-        GET /document/{id}         → Lambda: get_document_url  → DynamoDB (read) + presigned S3 URL
-
- Client-side only, no backend call:
-        Web Speech API — reads the explanation aloud, and powers
-        voice input in chat, entirely in the browser
-```
+Eight Lambda functions, one Step Functions state machine, one HTTP
+API — a genuinely orchestrated pipeline, not a single function doing
+everything.
 
 ### AWS services used, and what each one is doing
 
@@ -122,13 +152,14 @@ the code assuming ahead of time.
 | λ **AWS Lambda** | Every unit of compute in the backend — eight functions total, each doing one job. Nothing runs, and nothing costs anything, when no one is uploading a document. |
 | 🗄️ **Amazon DynamoDB** | Stores each analysis result — status, summary, flagged clauses, raw extracted text (for chat), and the document's S3 location (for the viewer) — on-demand billing, no provisioned capacity to manage. |
 | 🌐 **Amazon API Gateway** | A single HTTP API fronting all six externally-callable Lambda functions, with CORS handled at the gateway level. |
+| ☁️ **AWS Amplify Hosting** | Hosts the React frontend — a static single-page build, no server to manage. Deploy steps below. |
 | 📊 **AWS X-Ray** (via `Tracing: Active`) | Every Lambda function traces its execution, so a slow or failing step is traceable end-to-end across the whole pipeline, not just visible in isolated logs. |
 
-That's **seven distinct AWS services** working together in one pipeline
-— not one Lambda calling one API. The one deliberate exception is
-explained below.
+That's **eight distinct AWS services** working together in one
+pipeline — not one Lambda calling one API. The one deliberate
+exception is explained below.
 
-## ⚠️ Why Groq instead of Amazon Bedrock
+## ⚠️ Why Groq Instead of Amazon Bedrock
 
 The explanation step originally called **Amazon Bedrock**, and it
 worked. It was ultimately swapped for **Groq** for reasons worth being
@@ -174,6 +205,13 @@ host, that's the one honest trade-off here — made for reasons of
 access friction and live-demo latency, not because Bedrock doesn't
 work.
 
+One more thing worth knowing: Groq moved `llama-3.3-70b-versatile` and
+`llama-3.1-8b-instant` to its Enterprise-only tier on 2026-08-16 —
+they no longer work with a free/developer key. Doculyze defaults to
+`openai/gpt-oss-120b`, Groq's own recommended replacement — see
+[console.groq.com/docs/models](https://console.groq.com/docs/models)
+for the current list before overriding it.
+
 ## 🚀 Future Implementation
 
 Things worth building next, roughly in order of impact:
@@ -212,8 +250,7 @@ doculyze/
 📹 **Presenting or recording a demo?** See
 [`docs/demo-script.md`](docs/demo-script.md) for a paced, 3-minute
 walkthrough covering the upload flow, the spoken explanation, the
-highlighted clauses, voice chat, and the architecture — with a
-shortened version if you're pressed for time.
+highlighted clauses, voice chat, and the architecture.
 
 ### Backend functions
 
@@ -231,6 +268,7 @@ shortened version if you're pressed for time.
 ## ✨ Frontend Features
 
 Beyond upload → explain, the results view includes:
+
 - **Document preview with highlights** — the original file (image or multi-page PDF, rendered client-side with `pdfjs-dist`) shown with each flagged clause highlighted at its actual position on the page. A flag whose exact wording couldn't be matched back to a position is still listed in text — it just won't have a highlight, rather than failing anything.
 - **Spoken explanation** — as soon as an explanation is ready, the browser reads it aloud automatically, with a Listen/Stop control in case autoplay is blocked or you want to replay it.
 - **Chat, by text or by voice** — ask follow-up questions about the document; a microphone button lets you ask by speaking instead of typing (Chrome/Edge only — the button simply doesn't render in browsers without voice-input support), and each answer has its own "read aloud" toggle. Answers are grounded only in that document's extracted text.
@@ -245,6 +283,7 @@ Voice features use the browser's built-in Web Speech API — no backend, no new 
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
 - Node.js 18+ (frontend)
 - Python 3.12 (backend)
+- A GitHub (or GitLab/Bitbucket) repo, if deploying the frontend through Amplify's Git-based workflow (recommended — see below)
 
 ## 🔧 Deploy the Backend
 
@@ -263,27 +302,68 @@ Gateway HTTP API. Note the API endpoint URL printed at the end of
 `sam deploy` — you'll need it for the frontend.
 
 The default model, `openai/gpt-oss-120b`, is Groq's own current
-recommendation — `llama-3.3-70b-versatile` and `llama-3.1-8b-instant`
-moved to Groq's Enterprise-only tier on 2026-08-16 and no longer work
-with a free/developer key, so double-check
+recommendation — double-check
 [console.groq.com/docs/models](https://console.groq.com/docs/models)
-before overriding `GroqModelId` to something else.
+before overriding `GroqModelId` to something else. To use a different
+model, add `GroqModelId=<model-id>` to the same `--parameter-overrides`
+flag.
 
-## 🖥️ Run the Frontend
+## ☁️ Deploy the Frontend — AWS Amplify Hosting
+
+The frontend is a static Vite/React build with no server-side
+rendering, which is exactly what Amplify Hosting is built for. It
+already ships with `frontend/amplify.yml`, so Amplify auto-detects the
+build settings — no manual configuration needed beyond the API URL.
+
+**Option A — Git-connected deploy (recommended)**
+
+1. Push this repo to GitHub, GitLab, or Bitbucket.
+2. In the [AWS Amplify Console](https://console.aws.amazon.com/amplify/), choose **Host a web app** → connect your repository → select the branch to deploy.
+3. When Amplify asks for the app root, set it to `frontend/` (this is a monorepo — the frontend isn't at the repo root).
+4. Amplify reads `frontend/amplify.yml` automatically:
+   ```yaml
+   version: 1
+   frontend:
+     phases:
+       preBuild:
+         commands:
+           - npm ci
+       build:
+         commands:
+           - npm run build
+     artifacts:
+       baseDirectory: dist
+       files:
+         - '**/*'
+     cache:
+       paths:
+         - node_modules/**/*
+   ```
+5. Before the first build, add an environment variable in **App settings → Environment variables**:
+   ```
+   VITE_API_BASE_URL = https://your-api-id.execute-api.your-region.amazonaws.com
+   ```
+   (the exact value printed at the end of `sam deploy` above)
+6. Click **Save and deploy**. Amplify builds and hosts it on a
+   `https://<branch>.<app-id>.amplifyapp.com` URL, with HTTPS and a
+   CDN in front of it by default.
+
+**Option B — Manual deploy (no Git required)**
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env      # paste in the API endpoint from the deploy output
-npm run dev                # local dev
-npm run build               # production build, deploy via Amplify Hosting
+cp .env.example .env
+# edit .env — paste in the ApiEndpoint from the backend deploy output
+npm run build
 ```
 
-The app is a single page — hero, upload box, results, and the
-How It Works / Why Doculyze / Use Cases / FAQ sections all live on one
-scroll, with in-page anchor navigation. No client-side routing, so it
-deploys to Amplify Hosting (or any static host) with no rewrite rules
-needed.
+Then in the Amplify Console, choose **Host a web app** → **Deploy
+without Git provider** → drag and drop the `frontend/dist/` folder.
+
+Either way, because the app is single-page with no client-side
+routing, **no rewrite rules are needed** — a common Amplify + SPA
+gotcha this project simply doesn't hit.
 
 ## 🧪 Local Testing Without AWS
 
@@ -311,6 +391,3 @@ so no `GROQ_API_KEY` is needed to run them (a dummy value is set in
 Built with 🧠 for the **First Commit** hackathon — Bharat Builds Tour
 
 </div>
-=======
-# doculyze
->>>>>>> 2435421f32f519b4316a8d1ca5365a0937736cc4
